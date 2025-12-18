@@ -50,6 +50,9 @@ class HomeController extends Controller
             try {
                 $client->getWorkspaces();
 
+                // Detect and store the connected user's role for UI permissions
+                $detectedRole = $client->getCurrentUserRole();
+
                 session([
                     'headquarters_url' => $headquartersUrl,
                     'hq_base_url' => $hqBaseUrl,
@@ -61,6 +64,7 @@ class HomeController extends Controller
                     'hq_auth' => [
                         'type' => 'basic',
                     ],
+                    'hq_user_role' => $detectedRole,
                 ]);
 
                 return redirect()->route('dashboard');
@@ -73,6 +77,8 @@ class HomeController extends Controller
                     \Log::info('API user login with 403 for workspaces', ['username' => $username, 'url' => $headquartersUrl]);
                     
                     // For API users, 403 on workspaces might be normal - try to proceed
+                    $detectedRole = $client->getCurrentUserRole();
+
                     session([
                         'headquarters_url' => $headquartersUrl,
                         'hq_base_url' => $hqBaseUrl,
@@ -84,6 +90,7 @@ class HomeController extends Controller
                         'hq_auth' => [
                             'type' => 'basic',
                         ],
+                        'hq_user_role' => $detectedRole,
                     ]);
 
                     return redirect()->route('dashboard')->with('warning', "Authenticated with API User account at {$headquartersUrl}, but access to /api/v1/workspaces is forbidden (HTTP 403). This is normal for some API users - other endpoints may still be accessible.");
@@ -106,6 +113,7 @@ class HomeController extends Controller
 
                     $client->setBearerToken($bearer['token']);
                     $client->getWorkspaces();
+                    $detectedRole = $client->getCurrentUserRole();
 
                     session([
                         'headquarters_url' => $headquartersUrl,
@@ -119,6 +127,7 @@ class HomeController extends Controller
                             'type' => 'bearer',
                             'token' => $bearer['token'],
                         ],
+                        'hq_user_role' => $detectedRole,
                     ]);
 
                     return redirect()->route('dashboard');

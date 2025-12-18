@@ -74,10 +74,17 @@
                 <div class="mt-3">
                     <small class="text-muted">Connected User</small>
                     <div class="bg-white p-2 rounded mt-1">
-                        <strong>{{ $username }}</strong><br>
-                        <small class="text-success">
-                            <i class="fas fa-circle me-1"></i>Connected
-                        </small>
+                        <div class="d-flex align-items-center justify-content-between">
+                            <div>
+                                <strong>{{ $username }}</strong>
+                                @if(!empty($userRole))
+                                    <span class="badge bg-secondary ms-2">{{ $userRole }}</span>
+                                @endif
+                            </div>
+                            <small class="text-success">
+                                <i class="fas fa-circle me-1"></i>Connected
+                            </small>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -214,6 +221,9 @@
             @if(($activeModule ?? 'overview') === 'workspaces')
             <div id="workspaces" class="mb-4">
                 @php($workspacesForbidden = !empty($apiWarnings) && collect($apiWarnings)->contains(fn ($w) => str_contains($w, 'Workspaces: HQ returned HTTP 403')))
+                @php($roleLower = strtolower((string) ($userRole ?? '')))
+                @php($isAdmin = in_array($roleLower, ['administrator','headquarter']))
+                @php($disableCreate = !$isAdmin || $workspacesForbidden)
 
                 <div class="d-flex align-items-start justify-content-between mb-3">
                     <div>
@@ -245,15 +255,23 @@
                                     @csrf
                                     <div class="col-12">
                                         <label class="form-label">Name</label>
-                                        <input name="name" class="form-control" placeholder="e.g. demo" maxlength="12" required>
+                                        <input name="name" class="form-control" placeholder="e.g. demo" maxlength="12" required {{ $disableCreate ? 'disabled' : '' }}>
                                         <div class="form-text">Lowercase letters/numbers only, max 12.</div>
                                     </div>
                                     <div class="col-12">
                                         <label class="form-label">Display name</label>
-                                        <input name="display_name" class="form-control" placeholder="e.g. Demo workspace" maxlength="300" required>
+                                        <input name="display_name" class="form-control" placeholder="e.g. Demo workspace" maxlength="300" required {{ $disableCreate ? 'disabled' : '' }}>
                                     </div>
                                     <div class="col-12 d-grid">
-                                        <button class="btn btn-primary" type="submit" {{ $workspacesForbidden ? 'disabled' : '' }}>Create</button>
+                                        <button class="btn btn-primary" type="submit" {{ $disableCreate ? 'disabled' : '' }}>Create</button>
+                                    </div>
+                                    <div class="col-12">
+                                        <div class="form-text text-muted">
+                                            Note: Creating or managing workspaces usually requires a Survey Solutions <strong>Administrator</strong> (or <strong>Headquarter</strong>) account. <strong>API users</strong> typically do not have permission and will receive HTTP 403.
+                                        </div>
+                                        @if(!$isAdmin)
+                                            <div class="small text-danger mt-1">Your role ({{ $userRole ?? 'Unknown' }}) does not have permission to manage workspaces.</div>
+                                        @endif
                                     </div>
                                 </form>
                             </div>
@@ -311,12 +329,12 @@
                                                         @if(data_get($workspace, 'disabled'))
                                                             <form method="POST" action="{{ route('dashboard.workspaces.enable', ['name' => $wsName]) }}" class="d-inline">
                                                                 @csrf
-                                                                <button class="btn btn-sm btn-success" type="submit" {{ $workspacesForbidden ? 'disabled' : '' }}>Enable</button>
+                                                                <button class="btn btn-sm btn-success" type="submit" {{ $disableCreate ? 'disabled' : '' }}>Enable</button>
                                                             </form>
                                                         @else
                                                             <form method="POST" action="{{ route('dashboard.workspaces.disable', ['name' => $wsName]) }}" class="d-inline">
                                                                 @csrf
-                                                                <button class="btn btn-sm btn-outline-danger" type="submit" {{ $workspacesForbidden ? 'disabled' : '' }}>Disable</button>
+                                                                <button class="btn btn-sm btn-outline-danger" type="submit" {{ $disableCreate ? 'disabled' : '' }}>Disable</button>
                                                             </form>
                                                         @endif
                                                     </td>
@@ -454,8 +472,16 @@
             @if(($activeModule ?? 'overview') === 'users')
             <div id="users" class="mb-4">
                 @php($usersForbidden = !empty($apiWarnings) && collect($apiWarnings)->contains(fn ($w) => str_contains($w, 'Users: HQ returned HTTP 403')))
+                @php($roleLower = strtolower((string) ($userRole ?? '')))
+                @php($isAdmin = in_array($roleLower, ['administrator','headquarter']))
+                @php($disableUserCreate = !$isAdmin || $usersForbidden)
                 @php($preferredRoleOrder = ['ApiUser', 'Headquarter', 'Supervisor', 'Interviewer', 'Observer', 'Administrator'])
                 @php($usersByRole = $users->groupBy(fn ($u) => data_get($u, 'role', 'Unknown')))
+                @php($supervisors = $users->where('role', 'Supervisor')
+                    ->map(fn ($u) => ['username' => data_get($u, 'username'), 'workspace' => data_get($u, 'workspace')])
+                    ->filter(fn ($u) => is_string(data_get($u, 'username')) && trim((string) data_get($u, 'username')) !== '')
+                    ->unique(fn ($u) => strtolower((string) data_get($u, 'workspace')) . '|' . strtolower((string) data_get($u, 'username')))
+                    ->values())
 
                 <div class="d-flex align-items-start justify-content-between mb-3">
                     <div>
@@ -487,7 +513,7 @@
                                     @csrf
                                     <div class="col-12">
                                         <label class="form-label">Role</label>
-                                        <select id="createUserRole" name="role" class="form-select" required>
+                                        <select id="createUserRole" name="role" class="form-select" required {{ $disableUserCreate ? 'disabled' : '' }}>
                                             <option value="ApiUser" selected>ApiUser</option>
                                             <option value="Headquarter">Headquarter</option>
                                             <option value="Supervisor">Supervisor</option>
@@ -497,32 +523,71 @@
                                     </div>
                                     <div class="col-12">
                                         <label class="form-label">Username</label>
-                                        <input name="username" class="form-control" placeholder="e.g. apiuser1" required>
+                                        <input name="username" class="form-control" placeholder="e.g. apiuser1" required {{ $disableUserCreate ? 'disabled' : '' }}>
                                     </div>
                                     <div class="col-12">
                                         <label class="form-label">Password</label>
-                                        <input name="password" type="password" class="form-control" required>
+                                        <input name="password" type="password" class="form-control" required {{ $disableUserCreate ? 'disabled' : '' }}>
                                     </div>
+
+                                    <div class="col-12">
+                                        <label class="form-label">Assign Workspace</label>
+                                        <select id="createUserWorkspace" name="workspace" class="form-select" required {{ ($disableUserCreate || $workspaces->isEmpty()) ? 'disabled' : '' }}>
+                                            <option value="">Select workspace</option>
+                                            @foreach($workspaces as $w)
+                                                @php($wn = data_get($w, 'name'))
+                                                @if(is_string($wn) && $wn !== '')
+                                                    <option value="{{ $wn }}" {{ old('workspace') === $wn ? 'selected' : '' }}>
+                                                        {{ data_get($w, 'display_name') ? (data_get($w, 'display_name') . ' (' . $wn . ')') : $wn }}
+                                                    </option>
+                                                @endif
+                                            @endforeach
+                                        </select>
+                                        @if($workspaces->isEmpty())
+                                            <div class="form-text text-muted">No workspaces available to assign.</div>
+                                        @endif
+                                    </div>
+
                                     <div id="createUserSupervisorGroup" class="col-12 d-none">
                                         <label class="form-label">Supervisor</label>
-                                        <input id="createUserSupervisor" name="supervisor" class="form-control" placeholder="supervisor login" disabled>
+                                        @if($supervisors->isNotEmpty())
+                                            <select id="createUserSupervisorSelect" name="supervisor" class="form-select" {{ $disableUserCreate ? 'disabled' : '' }}>
+                                                <option value="">Select supervisor</option>
+                                                @foreach($supervisors as $s)
+                                                    @php($login = (string) data_get($s, 'username'))
+                                                    @php($sw = (string) data_get($s, 'workspace'))
+                                                    <option value="{{ $login }}" data-workspace="{{ $sw }}" {{ old('supervisor') === $login ? 'selected' : '' }}>{{ $login }}</option>
+                                                @endforeach
+                                            </select>
+                                            <input id="createUserSupervisor" name="supervisor" class="form-control mt-2 d-none" placeholder="supervisor login" disabled>
+                                        @else
+                                            <select id="createUserSupervisorSelect" name="supervisor" class="form-select d-none" disabled>
+                                                <option value="">Supervisor list unavailable</option>
+                                            </select>
+                                            <input id="createUserSupervisor" name="supervisor" class="form-control" placeholder="supervisor login" value="{{ old('supervisor') }}" {{ $disableUserCreate ? 'disabled' : '' }}>
+                                        @endif
                                         <div class="form-text">Required only when Role is Interviewer.</div>
                                     </div>
                                     <div class="col-12">
                                         <label class="form-label">Full name (optional)</label>
-                                        <input name="full_name" class="form-control">
+                                        <input name="full_name" class="form-control" {{ $disableUserCreate ? 'disabled' : '' }}>
                                     </div>
                                     <div class="col-12">
                                         <label class="form-label">Email (optional)</label>
-                                        <input name="email" type="email" class="form-control">
+                                        <input name="email" type="email" class="form-control" {{ $disableUserCreate ? 'disabled' : '' }}>
                                     </div>
                                     <div class="col-12">
                                         <label class="form-label">Phone (optional)</label>
-                                        <input name="phone_number" class="form-control">
+                                        <input name="phone_number" class="form-control" {{ $disableUserCreate ? 'disabled' : '' }}>
                                     </div>
                                     <div class="col-12 d-grid">
-                                        <button class="btn btn-info text-white" type="submit">Create</button>
+                                        <button class="btn btn-info text-white" type="submit" {{ $disableUserCreate ? 'disabled' : '' }}>Create</button>
                                     </div>
+                                    @if(!$isAdmin)
+                                        <div class="col-12">
+                                            <div class="small text-danger">Your role ({{ $userRole ?? 'Unknown' }}) does not have permission to create HQ users.</div>
+                                        </div>
+                                    @endif
                                 </form>
                             </div>
                         </div>
@@ -618,18 +683,83 @@
     (function () {
         const roleSelect = document.getElementById('createUserRole');
         const supervisorGroup = document.getElementById('createUserSupervisorGroup');
+        const workspaceSelect = document.getElementById('createUserWorkspace');
+        const supervisorSelect = document.getElementById('createUserSupervisorSelect');
         const supervisorInput = document.getElementById('createUserSupervisor');
 
-        if (!roleSelect || !supervisorGroup || !supervisorInput) return;
+        if (!roleSelect || !supervisorGroup || (!supervisorSelect && !supervisorInput) || !workspaceSelect) return;
+
+        const formDisabled = roleSelect.disabled;
+
+        function applySupervisorFilter() {
+            if (!supervisorSelect) return;
+
+            const ws = workspaceSelect.value;
+            let anyVisible = false;
+
+            // Keep the placeholder (first option) always visible
+            for (let i = 1; i < supervisorSelect.options.length; i++) {
+                const opt = supervisorSelect.options[i];
+                const optWs = opt.getAttribute('data-workspace') || '';
+                const visible = ws !== '' && optWs === ws;
+                opt.hidden = !visible;
+                if (visible) anyVisible = true;
+            }
+
+            if (supervisorSelect.value) {
+                const selected = supervisorSelect.selectedOptions && supervisorSelect.selectedOptions[0];
+                const selectedWs = selected ? (selected.getAttribute('data-workspace') || '') : '';
+                if (ws === '' || selectedWs !== ws) {
+                    supervisorSelect.value = '';
+                }
+            }
+
+            supervisorSelect.disabled = !anyVisible;
+        }
 
         function applyRoleUi() {
             const isInterviewer = roleSelect.value === 'Interviewer';
             supervisorGroup.classList.toggle('d-none', !isInterviewer);
-            supervisorInput.disabled = !isInterviewer;
-            if (!isInterviewer) supervisorInput.value = '';
+            if (formDisabled) return;
+
+            const hasSupervisorOptions = !!(supervisorSelect && supervisorSelect.options && supervisorSelect.options.length > 1);
+
+            if (!isInterviewer) {
+                if (supervisorSelect) {
+                    supervisorSelect.disabled = true;
+                    supervisorSelect.value = '';
+                }
+                if (supervisorInput) {
+                    supervisorInput.disabled = true;
+                    supervisorInput.value = '';
+                }
+                return;
+            }
+
+            // Interviewer: prefer dropdown if we have options; otherwise fall back to text input
+            if (supervisorSelect) {
+                supervisorSelect.disabled = !hasSupervisorOptions;
+                supervisorSelect.classList.toggle('d-none', !hasSupervisorOptions);
+                if (!hasSupervisorOptions) supervisorSelect.value = '';
+            }
+
+            if (supervisorInput) {
+                supervisorInput.disabled = hasSupervisorOptions;
+                supervisorInput.classList.toggle('d-none', hasSupervisorOptions);
+                if (hasSupervisorOptions) supervisorInput.value = '';
+            }
+
+            // If using dropdown supervisors, it is filtered by workspace
+            if (hasSupervisorOptions) {
+                applySupervisorFilter();
+            }
         }
 
         roleSelect.addEventListener('change', applyRoleUi);
+        workspaceSelect.addEventListener('change', function () {
+            if (formDisabled) return;
+            applySupervisorFilter();
+        });
         applyRoleUi();
     })();
 </script>

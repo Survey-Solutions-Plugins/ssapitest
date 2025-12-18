@@ -58,14 +58,123 @@ class HeadquartersApiClient
     }
 
     /**
-     * Explicit Basic auth GET as per recommended pattern
+     * Try to detect the current user's role using available HQ endpoints.
+     * Returns normalized role like 'Administrator', 'Headquarter', 'Supervisor', 'Interviewer', 'ApiUser' or null if unknown.
+     */
+    public function getCurrentUserRole(): ?string
+    {
+        $loginId = trim($this->username);
+
+        // Swagger-backed: GET /api/v1/users/{id} where id can be user id OR user name OR user email
+        // This endpoint is global (not workspace-scoped)
+        if ($loginId !== '') {
+            $role = $this->tryGetRoleFromEndpoint('/api/v1/users/' . rawurlencode($loginId), false);
+            if ($role) {
+                return $role;
+            }
+
+            // Fallback for supervisors: GET /api/v1/supervisors/{id} where id can be user id/name/email
+            $role = $this->tryGetRoleFromEndpoint('/api/v1/supervisors/' . rawurlencode($loginId), false);
+            if ($role) {
+                return $role;
+            }
+
+            // Best-effort for interviewers: Swagger says UUID, but some builds accept username/email
+            $role = $this->tryGetRoleFromEndpoint('/api/v1/interviewers/' . rawurlencode($loginId), false);
+            if ($role) {
+                return $role;
+            }
+        }
+
+        // Preferred: unified current user endpoint (if available)
+        try {
+            $r = $this->basicGet('/api/v1/users/current', [], false);
+            if ($r->ok()) {
+                $json = $r->json();
+                $role = is_array($json) ? (data_get($json, 'Role') ?? data_get($json, 'role') ?? data_get($json, 'UserRole') ?? data_get($json, 'userRole')) : null;
+                return $this->normalizeRole(is_string($role) ? $role : null);
+            }
+            $usersCurrentStatus = $r->status();
+        } catch (\Throwable $e) {
+            // ignore
+            $usersCurrentStatus = null;
+        }
+
+        // Fallbacks: role-scoped endpoints
+        $supervisorCurrentStatus = null;
+        try {
+            $r = $this->basicGet('/api/v1/supervisors/current', [], true);
+            if ($r->ok()) {
+                return 'Supervisor';
+            }
+            $supervisorCurrentStatus = $r->status();
+        } catch (\Throwable $e) {
+            $supervisorCurrentStatus = null;
+        }
+
+        $interviewerCurrentStatus = null;
+        try {
+            $r = $this->basicGet('/api/v1/interviewers/current', [], true);
+            if ($r->ok()) {
+                return 'Interviewer';
+            }
+            $interviewerCurrentStatus = $r->status();
+        } catch (\Throwable $e) {
+            $interviewerCurrentStatus = null;
+        }
+
+        // Admin/Headquarter heuristic: ability to list workspaces globally
+        $workspacesStatus = null;
+        try {
+            $wr = $this->basicGet('/api/v1/workspaces', [], false);
+            $workspacesStatus = $wr->status();
+            if ($wr->ok()) {
+                // Treat as Headquarter (admin-level UI permissions)
+                return 'Headquarter';
+            }
+        } catch (\Throwable $e) {
+            $workspacesStatus = null;
+        }
+
+        // If nothing confirmed, unknown
+        return null;
+    }
+
+    private function tryGetRoleFromEndpoint(string $path, bool $workspaceScoped): ?string
+    {
+        try {
+            $r = $this->basicGet($path, [], $workspaceScoped);
+            if (!$r->ok()) {
+                return null;
+            }
+
+            $json = $r->json();
+            $role = is_array($json) ? (data_get($json, 'Role') ?? data_get($json, 'role') ?? data_get($json, 'UserRole') ?? data_get($json, 'userRole')) : null;
+            $normalized = $this->normalizeRole(is_string($role) ? $role : null);
+            if ($normalized) {
+                return $normalized;
+            }
+
+            // If endpoint implies a role but doesn't include the Role field
+            if (str_contains($path, '/api/v1/supervisors/')) {
+                return 'Supervisor';
+            }
+            if (str_contains($path, '/api/v1/interviewers/')) {
+                return 'Interviewer';
+            }
+        } catch (\Throwable $e) {
+            // ignore
+        }
+
+        return null;
+    }
+
+    /**
+     * Authenticated GET (Basic or Bearer depending on session)
      */
     private function basicGet(string $path, array $query = [], bool $workspaceScoped = true): \Illuminate\Http\Client\Response
     {
-        return Http::withBasicAuth($this->username, $this->password)
-            ->acceptJson()
-            ->timeout(20)
-            ->connectTimeout(10)
+        return $this->client()
             ->get($this->url($path, $workspaceScoped), $query);
     }
 
@@ -74,34 +183,25 @@ class HeadquartersApiClient
      */
     private function basicGetForWorkspace(string $workspaceName, string $path, array $query = []): \Illuminate\Http\Client\Response
     {
-        return Http::withBasicAuth($this->username, $this->password)
-            ->acceptJson()
-            ->timeout(20)
-            ->connectTimeout(10)
+        return $this->client()
             ->get($this->urlForWorkspace($path, $workspaceName), $query);
     }
 
     /**
-     * Explicit Basic auth POST as per recommended pattern
+     * Authenticated POST (Basic or Bearer depending on session)
      */
     private function basicPost(string $path, array $data = [], bool $workspaceScoped = true): \Illuminate\Http\Client\Response
     {
-        return Http::withBasicAuth($this->username, $this->password)
-            ->acceptJson()
-            ->timeout(20)
-            ->connectTimeout(10)
+        return $this->client()
             ->post($this->url($path, $workspaceScoped), $data);
     }
 
     /**
-     * Explicit Basic auth PATCH as per recommended pattern
+     * Authenticated PATCH (Basic or Bearer depending on session)
      */
     private function basicPatch(string $path, array $data = [], bool $workspaceScoped = true): \Illuminate\Http\Client\Response
     {
-        return Http::withBasicAuth($this->username, $this->password)
-            ->acceptJson()
-            ->timeout(20)
-            ->connectTimeout(10)
+        return $this->client()
             ->patch($this->url($path, $workspaceScoped), $data);
     }
 
@@ -467,6 +567,15 @@ class HeadquartersApiClient
                         \Log::info("HQ supervisors with workspace {$workspaceName}", ['response' => $rawJson]);
                         $wsSupervisors = $this->extractList($rawJson, ['Users', 'users', 'items', 'supervisors']);
                         if (!empty($wsSupervisors)) {
+                            // Tag each supervisor with the workspace it was listed from
+                            $wsSupervisors = array_map(function ($s) use ($workspaceName) {
+                                if (!is_array($s)) {
+                                    return $s;
+                                }
+                                $s['WorkspaceName'] = $s['WorkspaceName'] ?? $s['Workspace'] ?? $workspaceName;
+                                return $s;
+                            }, $wsSupervisors);
+
                             $supervisors = array_merge($supervisors, $wsSupervisors);
                             // Track which workspace each supervisor id belongs to for fetching team interviewers
                             foreach ($wsSupervisors as $s) {
@@ -596,6 +705,10 @@ class HeadquartersApiClient
                         foreach (collect($items)->take($limit) as $iv) {
                             if (!is_array($iv)) {
                                 continue;
+                            }
+                            // Tag each interviewer with the workspace it was listed from
+                            if (is_string($wsForSupervisor) && $wsForSupervisor !== '') {
+                                $iv['WorkspaceName'] = $iv['WorkspaceName'] ?? $iv['Workspace'] ?? $wsForSupervisor;
                             }
                             $normalized = $this->normalizeUserItem($iv, 'Interviewer');
                             $normalized['supervisor'] = $supervisorUsernameById[(string) $supervisorId] ?? null;
@@ -780,6 +893,72 @@ class HeadquartersApiClient
         $body = $response->body();
         $body = is_string($body) ? trim($body) : '';
         return $body !== '' ? $body : null;
+    }
+
+    /**
+     * Assign one or more workspaces to a user.
+     * Swagger: POST /api/v1/workspaces/assign
+     */
+    public function assignWorkspacesToUser(string $userId, array $workspaceNames, string $mode = 'Assign', ?string $supervisorId = null): void
+    {
+        $workspaceNames = array_values(array_filter(array_map(function ($w) {
+            return is_string($w) ? trim($w) : null;
+        }, $workspaceNames)));
+
+        if ($userId === '' || empty($workspaceNames)) {
+            return;
+        }
+
+        $workspaces = array_map(function (string $name) use ($supervisorId) {
+            $item = ['Workspace' => $name];
+            if (is_string($supervisorId) && $supervisorId !== '') {
+                $item['SupervisorId'] = $supervisorId;
+            }
+            return $item;
+        }, $workspaceNames);
+
+        $payload = [
+            'UserIds' => [$userId],
+            'Workspaces' => $workspaces,
+            'Mode' => $mode,
+        ];
+
+        $response = $this->basicPost('/api/v1/workspaces/assign', $payload, false);
+        $response->throw();
+    }
+
+    /**
+     * Resolve a user's UUID by login/name/email using Swagger-supported endpoints.
+     */
+    public function resolveUserId(string $idOrNameOrEmail): ?string
+    {
+        $key = trim($idOrNameOrEmail);
+        if ($key === '') {
+            return null;
+        }
+
+        foreach ([
+            '/api/v1/users/' . rawurlencode($key),
+            '/api/v1/supervisors/' . rawurlencode($key),
+        ] as $path) {
+            try {
+                $r = $this->basicGet($path, [], false);
+                if (!$r->ok()) {
+                    continue;
+                }
+                $json = $r->json();
+                $id = is_array($json)
+                    ? (data_get($json, 'UserId') ?? data_get($json, 'userId') ?? data_get($json, 'id') ?? data_get($json, 'Id'))
+                    : null;
+                if (is_string($id) && trim($id) !== '') {
+                    return trim($id);
+                }
+            } catch (\Throwable $e) {
+                // ignore
+            }
+        }
+
+        return null;
     }
 
     /**

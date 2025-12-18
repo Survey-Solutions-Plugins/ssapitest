@@ -51,7 +51,11 @@ class ManageController extends Controller
                 'url' => session('headquarters_url'),
             ]);
 
-            return redirect()->back()->with('error', "HQ rejected workspace create (HTTP {$status}). {$body}");
+            $hint = $status === 403
+                ? ' This operation typically requires an Administrator (or Headquarter) account in Survey Solutions. API users usually cannot create or manage workspaces.'
+                : '';
+
+            return redirect()->back()->with('error', "HQ rejected workspace create (HTTP {$status}). {$body}{$hint}");
         } catch (\Throwable $e) {
             Log::warning('HQ create workspace failed', [
                 'error' => $e->getMessage(),
@@ -76,6 +80,7 @@ class ManageController extends Controller
             'phone_number' => ['nullable', 'string', 'max:255'],
             'email' => ['nullable', 'email', 'max:255'],
             'supervisor' => ['nullable', 'string', 'max:255'],
+            'workspace' => ['required', 'string', 'max:12', 'regex:/^[0-9a-z]+$/'],
         ]);
 
         if ($validated['role'] === 'Interviewer' && empty($validated['supervisor'])) {
@@ -94,9 +99,48 @@ class ManageController extends Controller
                 'Supervisor' => $validated['supervisor'] ?? null,
             ]);
 
+            $selectedWorkspace = is_string($validated['workspace'] ?? null) ? trim((string) $validated['workspace']) : '';
+            $warning = null;
+
+            if ($selectedWorkspace !== '') {
+                if (!$createdId) {
+                    $warning = 'User created, but HQ did not return a user id, so workspace assignment was skipped.';
+                } else {
+                    $supervisorId = null;
+                    if ($validated['role'] === 'Interviewer' && !empty($validated['supervisor'])) {
+                        $supervisorId = $client->resolveUserId((string) $validated['supervisor']);
+                    }
+
+                    try {
+                        $client->assignWorkspacesToUser($createdId, [$selectedWorkspace], 'Assign', $supervisorId);
+                    } catch (\Illuminate\Http\Client\RequestException $e) {
+                        $status = optional($e->response)->status();
+                        $warning = "User created, but workspace assignment was rejected by HQ (HTTP {$status}).";
+                        Log::warning('HQ assign workspaces failed', [
+                            'status' => $status,
+                            'url' => session('headquarters_url'),
+                            'user_id' => $createdId,
+                            'workspaces' => [$selectedWorkspace],
+                        ]);
+                    } catch (\Throwable $e) {
+                        $warning = 'User created, but workspace assignment failed (network/timeout).';
+                        Log::warning('HQ assign workspaces failed', [
+                            'error' => $e->getMessage(),
+                            'url' => session('headquarters_url'),
+                            'user_id' => $createdId,
+                            'workspaces' => [$selectedWorkspace],
+                        ]);
+                    }
+                }
+            }
+
             $suffix = $createdId ? " (id: {$createdId})" : '';
 
-            return redirect()->back()->with('success', 'User created successfully' . $suffix);
+            $redirect = redirect()->back()->with('success', 'User created successfully' . $suffix);
+            if ($warning) {
+                $redirect = $redirect->with('warning', $warning);
+            }
+            return $redirect;
         } catch (\Illuminate\Http\Client\RequestException $e) {
             $status = optional($e->response)->status();
             $body = optional($e->response)->body();

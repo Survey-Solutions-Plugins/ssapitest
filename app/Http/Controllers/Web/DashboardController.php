@@ -52,6 +52,18 @@ class DashboardController extends Controller
         $usersAccessDenied = false;
         $usersAccessError = false;
 
+        // Always attempt to refresh role (fixes stale/incorrect session values)
+        $userRole = session('hq_user_role');
+        try {
+            $detected = $client->getCurrentUserRole();
+            if (!empty($detected) && $detected !== $userRole) {
+                $userRole = $detected;
+                session(['hq_user_role' => $detected]);
+            }
+        } catch (\Throwable $e) {
+            // ignore role detection failures
+        }
+
         // Always fetch workspaces so header counts are accurate across modules
         try {
             $workspaces = $client->getWorkspaces();
@@ -128,6 +140,7 @@ class DashboardController extends Controller
             'usersAccessError' => $usersAccessError,
             'usersDebug' => $usersDebug,
             'workspaceStatus' => $workspaceStatus,
+            'userRole' => $userRole,
         ];
 
         return view('dashboard', $dashboardData);
